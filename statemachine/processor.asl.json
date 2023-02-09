@@ -1,0 +1,81 @@
+{
+    "Comment": "A state machine to walk through basic Lambda steps",
+    "StartAt": "Step 1",
+    "States": {
+        "Step 1": {
+            "Type": "Task",
+            "Parameters": {
+                "payload.$": "$.detail",
+                "sfnId.$": "$$.Execution.Id"
+            },
+            "Resource": "${Step1FunctionArn}",
+            "Retry": [
+                {
+                    "ErrorEquals": [
+                        "States.TaskFailed"
+                    ],
+                    "IntervalSeconds": 15,
+                    "MaxAttempts": 5,
+                    "BackoffRate": 1.5
+                }
+            ],
+            "Next": "Step 2"
+        },
+        "Step 2": {
+            "Type": "Choice",
+            "Choices": [
+                {
+                    "Variable": "$.nextStep",
+                    "StringEquals": "a",
+                    "Next": "Step 3a"
+                }
+            ],
+            "Default": "Step 3b"
+        },
+        "Step 3a": {
+            "Type": "Task",
+            "Resource": "${Step3aFunctionArn}",
+            "Retry": [
+                {
+                    "ErrorEquals": [
+                        "States.TaskFailed"
+                    ],
+                    "IntervalSeconds": 2,
+                    "MaxAttempts": 3,
+                    "BackoffRate": 1
+                }
+            ],
+            "Next": "Step4"
+        },
+        "Step 3b": {
+            "Type": "Task",
+            "Resource": "${Step3bFunctionArn}",
+            "Retry": [
+                {
+                    "ErrorEquals": [
+                        "States.TaskFailed"
+                    ],
+                    "IntervalSeconds": 2,
+                    "MaxAttempts": 3,
+                    "BackoffRate": 1
+                }
+            ],
+            "Next": "Step4"
+        },
+        "Step4": {
+            "Type": "Task",
+            "Resource": "${Step4FunctionArn}",
+            "Retry": [
+                {
+                    "ErrorEquals": [
+                        "States.TaskFailed"
+                    ],
+                    "IntervalSeconds": 2,
+                    "MaxAttempts": 3,
+                    "BackoffRate": 1
+                }
+            ],
+            "End": true
+        }
+    }
+}

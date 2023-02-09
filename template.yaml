@@ -1,0 +1,220 @@
+# TODO:
+#   Maybe add in ECS Fargate Task Running?
+
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  sam-sfn-processor
+
+  Sample SAM Template for sam-sfn-processor
+
+Parameters:
+  SecretARN:
+    Description: ARN to MongoDB Secret in SSM
+    Type: String
+
+
+# More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
+Globals:
+  Function:
+    Tracing: Active
+  Api:
+    TracingEnabled: True
+
+Resources:
+  ProcessingStateMachine:
+    Type: AWS::Serverless::StateMachine # More info about State Machine Resource: https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/sam-resource-statemachine.html
+    Properties:
+      DefinitionUri: statemachine/processor.asl.json
+      DefinitionSubstitutions:
+        Step1FunctionArn: !GetAtt Step1Function.Arn
+        Step3aFunctionArn: !GetAtt Step3aFunction.Arn
+        Step3bFunctionArn: !GetAtt Step3bFunction.Arn
+        Step4FunctionArn: !GetAtt Step4Function.Arn
+        DDBPutItem: !Sub arn:${AWS::Partition}:states:::dynamodb:putItem
+        DDBTable: !Ref TransactionTable
+      Events:
+        HourlyTradingSchedule:
+          Type: Schedule # More info about Schedule Event Source: https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/sam-property-statemachine-schedule.html
+          Properties:
+            Description: Schedule to run the processing state machine every hour
+            Enabled: False # This schedule is disabled by default to avoid incurring charges.
+            Schedule: "rate(1 hour)"
+      Policies: # Find out more about SAM policy templates: https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/serverless-policy-templates.html
+        - LambdaInvokePolicy:
+            FunctionName: !Ref Step1Function
+        - LambdaInvokePolicy:
+            FunctionName: !Ref Step3aFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref Step3bFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref Step4Function
+        - DynamoDBWritePolicy:
+            TableName: !Ref TransactionTable
+
+  ProcessorLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: !Sub lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: XRayWriteOnlyAccess
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'xray:PutTraceSegments'
+                  - 'xray:PutTelemetryRecords'
+                  - 'xray:GetSamplingRules'
+                  - 'xray:GetSamplingTargets'
+                  - 'xray:GetSamplingStatisticSummaries'
+                Resource:
+                  - '*'
+        - PolicyName: CloudwatchLoggingAccess
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource:
+                  - '*'
+        - PolicyName: SecretAccess
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'secretsmanager:GetSecretValue'
+                  - 'secretsmanager:DescribeSecret'
+                Resource:
+                  - !Ref SecretARN
+
+
+  Step1Function:
+    Type: AWS::Serverless::Function # More info about Function Resource: https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/sam-resource-function.html
+    Properties:
+      CodeUri: functions/step-1/
+      Handler: app.lambdaHandler
+      Environment:
+        Variables:
+          SECRET_ARN: !Ref SecretARN
+      Runtime: nodejs16.x
+      Role: !GetAtt ProcessorLambdaRole.Arn
+      Timeout: 30
+      Architectures:
+        - x86_64
+
+  Step3aFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/step-3a/
+      Handler: app.lambdaHandler
+      Environment:
+        Variables:
+          SECRET_ARN: !Ref SecretARN
+      Runtime: nodejs16.x
+      Role: !GetAtt ProcessorLambdaRole.Arn
+      Timeout: 30
+      Architectures:
+        - x86_64
+
+  Step3bFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/step-3b/
+      Handler: app.lambdaHandler
+      Environment:
+        Variables:
+          SECRET_ARN: !Ref SecretARN
+      Runtime: nodejs16.x
+      Role: !GetAtt ProcessorLambdaRole.Arn
+      Timeout: 30
+      Architectures:
+        - x86_64
+
+  Step4Function:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: functions/step-4/
+      Handler: app.lambdaHandler
+      Environment:
+        Variables:
+          SECRET_ARN: !Ref SecretARN
+      Runtime: nodejs16.x
+      Role: !GetAtt ProcessorLambdaRole.Arn
+      Timeout: 30
+      Architectures:
+        - x86_64
+
+
+
+  EventBridgeBus:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: ProcessingEventBus
+
+  EventBridgeIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: !Sub events.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: PutEventsProcessingEventBus
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'states:StartExecution'
+                Resource:
+                  - !GetAtt ProcessingStateMachine.Arn
+
+  EventBridgeRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: ProcessingEventRule
+      EventBusName: !GetAtt EventBridgeBus.Name
+      EventPattern: 
+        source:
+          - api.processingEvent
+      Targets:
+        - Arn: !GetAtt ProcessingStateMachine.Arn
+          Id: ProcessingEventRuleTargetId
+          RoleArn: !GetAtt EventBridgeIAMRole.Arn
+
+  TransactionTable:
+    Type: AWS::Serverless::SimpleTable # More info about SimpleTable Resource: https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/sam-resource-simpletable.html
+    Properties:
+      PrimaryKey:
+        Name: Id
+        Type: String
+      ProvisionedThroughput:
+        ReadCapacityUnits: 1
+        WriteCapacityUnits: 1
+
+Outputs:
+  # ProcessingStateMachineHourlyTradingSchedule is an implicit Schedule event rule created out of Events key under Serverless::StateMachine
+  # Find out more about other implicit resources you can reference within SAM
+  # https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/sam-specification-generated-resources.html
+  ProcessingStateMachineArn:
+    Description: "Processing state machine ARN"
+    Value: !Ref ProcessingStateMachine
+  ProcessingStateMachineRole:
+    Description: "IAM Role created for Processing state machine based on the specified SAM Policy Templates"
+    Value: !GetAtt ProcessingStateMachineRole.Arn
